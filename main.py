@@ -17,20 +17,28 @@ START_CAPITAL = 2_000_000
 STATE_FILE = "portfolio_state.json"
 
 # =========================
-# 🔥 현재가 + 히스토리 (최소 수정)
+# 🔥 확실한 현재가 함수
 # =========================
 def get_prices(ticker):
     t = yf.Ticker(ticker)
 
-    # ✅ 진짜 현재가
-    today = float(t.fast_info["last_price"])
+    info = t.info
 
-    # 히스토리 (판단 기준 그대로 유지)
+    # ✅ 1순위: 실시간 시장 가격
+    today = info.get("regularMarketPrice")
+
+    # ✅ fallback (혹시라도 None일 때)
+    if today is None:
+        today = info.get("previousClose")
+
+    today = float(today)
+
+    # 히스토리 (판단 기준 유지)
     hist = t.history(period="40d", interval="1d")
     close = hist["Close"].dropna().values
 
-    yesterday = float(close[-2].item())
-    month_ago = float(close[-21].item())
+    yesterday = float(close[-2])
+    month_ago = float(close[-21])
 
     return today, yesterday, month_ago, close
 
@@ -45,13 +53,12 @@ state = {
 if os.path.exists(STATE_FILE):
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-            state.update(saved)
+            state.update(json.load(f))
     except:
         pass
 
 # =========================
-# 가격 수집 (🔥 정확)
+# 가격 수집 (🔥 확정)
 # =========================
 slv_today, slv_yest, slv_month, slv_series = get_prices("SLV")
 agq_today, agq_yest, agq_month, agq_series = get_prices("AGQ")
@@ -71,14 +78,14 @@ agq_month_r = (agq_today / agq_month - 1) * 100
 weights = state["last_weights"].copy()
 reason = []
 
-if agq_today / float(agq_series[-20].item()) > 1:
+if agq_today / float(agq_series[-20]) > 1:
     weights = {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2}
     reason.append("AGQ 중기 상승 추세 유지")
 else:
     weights = {"SLV": 0.6, "AGQ": 0.0, "CASH": 0.4}
     reason.append("AGQ 중기 추세 이탈")
 
-if slv_today / float(slv_series[-20].item()) < 1:
+if slv_today / float(slv_series[-20]) < 1:
     weights = {"SLV": 0.0, "AGQ": 0.0, "CASH": 1.0}
     reason.append("SLV 중기 추세 붕괴 → 현금 전환")
 
@@ -97,7 +104,7 @@ cash_amt = total * weights["CASH"]
 # 텔레그램 메시지
 # =========================
 message = f"""
-📊 Daily Silver Strategy (실시간 가격 반영)
+📊 Daily Silver Strategy (실시간 확정 가격)
 
 📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
