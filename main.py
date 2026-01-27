@@ -17,19 +17,18 @@ START_CAPITAL = 2_000_000
 STATE_FILE = "portfolio_state.json"
 
 # =========================
-# 가격 조회 (🔥 정규장 외 포함)
+# 🔥 현재가 + 히스토리 (최소 수정)
 # =========================
 def get_prices(ticker):
-    df = yf.download(
-        ticker,
-        period="40d",
-        progress=False,
-        prepost=True        # ✅ 이 한 줄만 추가
-    )
+    t = yf.Ticker(ticker)
 
-    close = df["Close"].dropna().values
+    # ✅ 진짜 현재가
+    today = float(t.fast_info["last_price"])
 
-    today = float(close[-1].item())
+    # 히스토리 (판단 기준 그대로 유지)
+    hist = t.history(period="40d", interval="1d")
+    close = hist["Close"].dropna().values
+
     yesterday = float(close[-2].item())
     month_ago = float(close[-21].item())
 
@@ -52,7 +51,7 @@ if os.path.exists(STATE_FILE):
         pass
 
 # =========================
-# 가격 수집
+# 가격 수집 (🔥 정확)
 # =========================
 slv_today, slv_yest, slv_month, slv_series = get_prices("SLV")
 agq_today, agq_yest, agq_month, agq_series = get_prices("AGQ")
@@ -67,7 +66,7 @@ slv_month_r = (slv_today / slv_month - 1) * 100
 agq_month_r = (agq_today / agq_month - 1) * 100
 
 # =========================
-# 판단 로직 (절대 변경 없음)
+# 판단 로직 (❌ 변경 없음)
 # =========================
 weights = state["last_weights"].copy()
 reason = []
@@ -95,10 +94,10 @@ agq_amt = total * weights["AGQ"]
 cash_amt = total * weights["CASH"]
 
 # =========================
-# 텔레그램 메시지 (🔥 실시간 반영 가격)
+# 텔레그램 메시지
 # =========================
 message = f"""
-📊 Daily Silver Strategy (Pre/Post Market 포함)
+📊 Daily Silver Strategy (실시간 가격 반영)
 
 📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
@@ -123,18 +122,15 @@ AGQ {weights['AGQ']*100:.0f}% ({agq_amt:,.0f}원)
 {" / ".join(reason)}
 
 [🔔 비중 변화]
-{"변경 있음" if changed else "변경 없음 (매일 알림 전송)"}
+{"변경 있음" if changed else "변경 없음 (매일 알림)"}
 """
 
 # =========================
-# 텔레그램 전송 (항상 전송)
+# 텔레그램 전송
 # =========================
 requests.post(
     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-    data={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
+    data={"chat_id": TELEGRAM_CHAT_ID, "text": message}
 )
 
 # =========================
@@ -144,4 +140,3 @@ state["last_weights"] = weights
 
 with open(STATE_FILE, "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2, ensure_ascii=False)
-
