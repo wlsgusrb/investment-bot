@@ -1,11 +1,8 @@
 {
-  "date": "2026-01-25",
-  "capital": 3000000,
-  "holdings": {
-    "SLV": 1200000,
-    "AGQ": 1200000,
-    "SHY": 600000
+  "last_weights": {
+    "SLV": 0.4,
+    "AGQ": 0.4,
+    "CASH": 0.2
   },
-  "last_value": 2000000,
-  "start_date": "2026-01-25"
+  "last_value": 2000000
 }
