@@ -3,10 +3,9 @@ import json
 import os
 import requests
 from datetime import datetime
-import numpy as np
 
 # =========================
-# 텔레그램
+# 텔레그램 설정
 # =========================
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
@@ -18,11 +17,11 @@ START_CAPITAL = 2_000_000
 STATE_FILE = "portfolio_state.json"
 
 # =========================
-# 가격 조회 (안정 버전)
+# 가격 조회 (안정)
 # =========================
 def get_prices(ticker):
     df = yf.download(ticker, period="40d", progress=False)
-    close = df["Close"].dropna().to_numpy().reshape(-1)
+    close = df["Close"].dropna().values
 
     today = float(close[-1])
     yesterday = float(close[-2])
@@ -31,7 +30,7 @@ def get_prices(ticker):
     return today, yesterday, month_ago, close
 
 # =========================
-# 상태 불러오기 (깨져있어도 복구)
+# 상태 로드 (없으면 초기화)
 # =========================
 state = {
     "last_weights": {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2},
@@ -41,11 +40,8 @@ state = {
 if os.path.exists(STATE_FILE):
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            if "last_weights" in loaded:
-                state["last_weights"] = loaded["last_weights"]
-            if "last_value" in loaded:
-                state["last_value"] = loaded["last_value"]
+            saved = json.load(f)
+            state.update(saved)
     except:
         pass
 
@@ -56,7 +52,7 @@ slv_today, slv_yest, slv_month, slv_series = get_prices("SLV")
 agq_today, agq_yest, agq_month, agq_series = get_prices("AGQ")
 
 # =========================
-# 수익률 계산
+# 수익률
 # =========================
 slv_day = (slv_today / slv_yest - 1) * 100
 agq_day = (agq_today / agq_yest - 1) * 100
@@ -65,21 +61,21 @@ slv_month_r = (slv_today / slv_month - 1) * 100
 agq_month_r = (agq_today / agq_month - 1) * 100
 
 # =========================
-# 판단 로직 (백테스트 기준 그대로)
+# 비중 판단 (기존 백테스트 로직 유지)
 # =========================
-reason = []
 weights = state["last_weights"].copy()
+reason = []
 
 if agq_today / agq_series[-20] > 1:
     weights = {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2}
-    reason.append("AGQ 중기 상승 추세")
+    reason.append("AGQ 중기 상승 추세 유지")
 else:
     weights = {"SLV": 0.6, "AGQ": 0.0, "CASH": 0.4}
     reason.append("AGQ 중기 추세 이탈")
 
 if slv_today / slv_series[-20] < 1:
     weights = {"SLV": 0.0, "AGQ": 0.0, "CASH": 1.0}
-    reason.append("SLV 중기 붕괴 → 전량 현금")
+    reason.append("SLV 중기 추세 붕괴 → 현금 전환")
 
 changed = weights != state["last_weights"]
 
@@ -92,12 +88,16 @@ agq_amt = total * weights["AGQ"]
 cash_amt = total * weights["CASH"]
 
 # =========================
-# 메시지
+# 텔레그램 메시지 (현재가 추가됨)
 # =========================
 message = f"""
-📊 Daily Investment Bot
+📊 Daily Silver Strategy
 
 📅 {datetime.now().strftime('%Y-%m-%d')}
+
+[💵 현재가]
+SLV: ${slv_today:.2f}
+AGQ: ${agq_today:.2f}
 
 [📈 일간 변동]
 SLV: {slv_day:.2f}%
