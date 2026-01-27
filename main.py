@@ -17,20 +17,22 @@ START_CAPITAL = 2_000_000
 STATE_FILE = "portfolio_state.json"
 
 # =========================
-# 가격 가져오기 (🔥 최소 수정 핵심)
+# 🔥 안정적인 현재가 함수 (최종)
 # =========================
 def get_prices(ticker):
-    # ✅ 변경 포인트: download → Ticker().history (1d, 1m)
-    df = yf.Ticker(ticker).history(
-        period="1d",
-        interval="1m",
-        prepost=True
-    )
+    t = yf.Ticker(ticker)
+    info = t.info
 
-    # 실행 시점 최신 체결가
-    today = float(df["Close"].dropna().iloc[-1].item())
+    # ✅ 1순위: 정규시장 현재가
+    today = info.get("regularMarketPrice")
 
-    # 일봉 (판단 기준 유지)
+    # ✅ fallback: 전일 종가
+    if today is None:
+        today = info.get("previousClose")
+
+    today = float(today)
+
+    # 일봉 데이터 (판단 기준 유지)
     hist = yf.download(
         ticker,
         period="40d",
@@ -39,8 +41,8 @@ def get_prices(ticker):
     )
 
     close = hist["Close"].dropna().values
-    yesterday = float(close[-2].item())
-    month_ago = float(close[-21].item())
+    yesterday = float(close[-2])
+    month_ago = float(close[-21])
 
     return today, yesterday, month_ago, close
 
@@ -101,7 +103,7 @@ message = f"""
 
 📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
-[💵 현재가 (실행 시점)]
+[💵 현재가]
 SLV: ${slv_today:.2f}
 AGQ: ${agq_today:.2f}
 
@@ -130,10 +132,7 @@ AGQ {weights['AGQ']*100:.0f}%
 # =========================
 requests.post(
     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-    data={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
+    data={"chat_id": TELEGRAM_CHAT_ID, "text": message}
 )
 
 # =========================
