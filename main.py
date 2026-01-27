@@ -19,7 +19,7 @@ def get_prices(ticker):
         progress=False
     )
 
-    # ✅ 최소 수정: .item()
+    # 현재가 (1분봉 최신 체결)
     today = float(df["Close"].dropna().iloc[-1].item())
 
     hist = yf.download(
@@ -30,8 +30,10 @@ def get_prices(ticker):
     )
 
     close = hist["Close"].dropna().values
-    yesterday = float(close[-2])
-    month_ago = float(close[-21])
+
+    # ✅ 최소 수정
+    yesterday = float(close[-2].item())
+    month_ago = float(close[-21].item())
 
     return today, yesterday, month_ago, close
 
@@ -69,10 +71,6 @@ else:
 if slv_today / slv_series[-20] < 1:
     weights = {"SLV": 0.0, "AGQ": 0.0, "CASH": 1.0}
     reason.append("SLV 중기 추세 붕괴 → 현금 전환")
-
-changed = weights != state["last_weights"]
-
-total = state["last_value"]
 
 message = f"""
 📊 Daily Silver Strategy
