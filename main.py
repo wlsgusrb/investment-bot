@@ -3,9 +3,10 @@ import json
 import os
 import requests
 from datetime import datetime
+import numpy as np
 
 # =========================
-# 🔐 텔레그램 (사용자 제공)
+# 🔐 텔레그램
 # =========================
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
@@ -17,11 +18,14 @@ START_CAPITAL = 2_000_000
 STATE_FILE = "portfolio_state.json"
 
 # =========================
-# 가격 조회 (Series 오류 방지)
+# 가격 조회 (완전 안전 버전)
 # =========================
 def get_prices(ticker):
     df = yf.download(ticker, period="40d", progress=False)
-    close = df["Close"].dropna().values
+
+    close = df["Close"].dropna().to_numpy()
+
+    close = close.reshape(-1)  # 🔥 핵심 수정
 
     today = float(close[-1])
     yesterday = float(close[-2])
@@ -57,28 +61,26 @@ slv_month_r = (slv_today / slv_month - 1) * 100
 agq_month_r = (agq_today / agq_month - 1) * 100
 
 # =========================
-# 판단 로직 (백테스트 기준 유지)
+# 판단 로직
 # =========================
 reason = []
 weights = state["last_weights"].copy()
 
-# AGQ 중기 추세 판단
 if agq_today / agq_series[-20] > 1:
     weights = {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2}
-    reason.append("AGQ 중기 상승 추세 유지")
+    reason.append("AGQ 중기 상승 추세")
 else:
     weights = {"SLV": 0.6, "AGQ": 0.0, "CASH": 0.4}
     reason.append("AGQ 중기 추세 이탈")
 
-# SLV 중기 추세 붕괴 시 전량 현금
 if slv_today / slv_series[-20] < 1:
     weights = {"SLV": 0.0, "AGQ": 0.0, "CASH": 1.0}
-    reason.append("SLV 중기 추세 붕괴 → 전량 현금")
+    reason.append("SLV 중기 붕괴 → 전량 현금")
 
 changed = weights != state["last_weights"]
 
 # =========================
-# 메시지 (변화 없어도 매일 전송)
+# 메시지
 # =========================
 message = f"""
 📊 Daily Investment Bot
@@ -89,7 +91,7 @@ message = f"""
 SLV: {slv_day:.2f}%
 AGQ: {agq_day:.2f}%
 
-[📆 최근 1개월]
+[📆 1개월 변동]
 SLV: {slv_month_r:.2f}%
 AGQ: {agq_month_r:.2f}%
 
@@ -102,7 +104,7 @@ AGQ {weights['AGQ']*100:.0f}% |
 {" / ".join(reason)}
 
 [🔔 비중 변화]
-{"변경 있음" if changed else "변경 없음 (알림은 매일 전송)"}
+{"변경 있음" if changed else "변경 없음 (매일 알림 전송)"}
 """
 
 # =========================
