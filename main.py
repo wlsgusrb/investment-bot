@@ -1,155 +1,129 @@
 import yfinance as yf
 import json
 import os
-from datetime import datetime
 import requests
-import pandas as pd
+from datetime import datetime, timedelta
 
-# ==============================
-# 🔐 텔레그램 설정
-# ==============================
-BOT_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
-CHAT_ID = "-1003476098424"
-
-# ==============================
-# 💰 기본 설정
-# ==============================
-START_CAPITAL = 2_000_000
+# =========================
+# 기본 설정
+# =========================
+START_CAPITAL = 2_000_000  # 시작 자본 200만원
 STATE_FILE = "portfolio_state.json"
 
-# ==============================
-# 📈 가격 가져오기 (Series 완전 차단)
-# ==============================
-def get_prices(ticker, days=30):
-    df = yf.download(ticker, period=f"{days}d", auto_adjust=True, progress=False)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-    if isinstance(df.columns, pd.MultiIndex):
-        close = df["Close"].iloc[:, 0]
-    else:
-        close = df["Close"]
+ASSETS = ["SLV", "AGQ"]
 
-    close = close.dropna()
+# =========================
+# 가격 조회 함수
+# =========================
+def get_prices(ticker):
+    df = yf.download(ticker, period="40d", progress=False)
+    close = df["Close"]
 
     today = float(close.iloc[-1])
     yesterday = float(close.iloc[-2])
-    month_ago = float(close.iloc[0])
+    month_ago = float(close.iloc[-21])
 
-    return today, yesterday, month_ago
+    return today, yesterday, month_ago, close
 
-# ==============================
-# 🧠 판단 로직 (백테스트 기준 그대로)
-# ==============================
-def decide_weights(agq_today, agq_month):
-    ratio = agq_today / agq_month
-
-    if ratio > 1:
-        return {
-            "SLV": 0.4,
-            "AGQ": 0.4,
-            "CASH": 0.2,
-            "reason": "AGQ 상승 추세 유지"
-        }
-    else:
-        return {
-            "SLV": 0.6,
-            "AGQ": 0.1,
-            "CASH": 0.3,
-            "reason": "AGQ 약세 → 현금 확대"
-        }
-
-# ==============================
-# 💾 상태 로드
-# ==============================
+# =========================
+# 상태 불러오기
+# =========================
 if os.path.exists(STATE_FILE):
     with open(STATE_FILE, "r") as f:
         state = json.load(f)
 else:
-    state = {}
+    state = {
+        "last_weights": {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2},
+        "last_value": START_CAPITAL
+    }
 
-if "last_value" not in state:
-    state["last_value"] = START_CAPITAL
+# =========================
+# 가격 수집
+# =========================
+slv_today, slv_yest, slv_month, slv_series = get_prices("SLV")
+agq_today, agq_yest, agq_month, agq_series = get_prices("AGQ")
 
-if "start_date" not in state:
-    state["start_date"] = datetime.today().strftime("%Y-%m-%d")
+# =========================
+# 수익률 계산
+# =========================
+slv_day = (slv_today / slv_yest - 1) * 100
+agq_day = (agq_today / agq_yest - 1) * 100
 
-# ==============================
-# 📊 가격 수집
-# ==============================
-slv_today, slv_yesterday, slv_month = get_prices("SLV")
-agq_today, agq_yesterday, agq_month = get_prices("AGQ")
+slv_month_r = (slv_today / slv_month - 1) * 100
+agq_month_r = (agq_today / agq_month - 1) * 100
 
-# ==============================
-# 📈 등락률 계산
-# ==============================
-def pct(a, b):
-    return (a / b - 1) * 100
+# =========================
+# 판단 로직 (기존 기준 유지)
+# =========================
+reason = []
+weights = state["last_weights"].copy()
 
-slv_day = pct(slv_today, slv_yesterday)
-agq_day = pct(agq_today, agq_yesterday)
+# AGQ 추세 판단 (20일 기준)
+agq_trend = agq_today / float(agq_series.iloc[-20])
 
-slv_month_chg = pct(slv_today, slv_month)
-agq_month_chg = pct(agq_today, agq_month)
+if agq_trend > 1:
+    weights = {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2}
+    reason.append("AGQ 중기 추세 유지 → 공격 비중 유지")
+else:
+    weights = {"SLV": 0.6, "AGQ": 0.0, "CASH": 0.4}
+    reason.append("AGQ 추세 이탈 → 레버리지 제거, 방어 전환")
 
-# ==============================
-# 🧠 판단
-# ==============================
-decision = decide_weights(agq_today, agq_month)
+# SLV 방어선 붕괴 체크
+slv_trend = slv_today / float(slv_series.iloc[-20])
+if slv_trend < 1:
+    weights = {"SLV": 0.0, "AGQ": 0.0, "CASH": 1.0}
+    reason.append("SLV 중기 추세 붕괴 → 전액 현금")
 
-# ==============================
-# 💰 금액 계산
-# ==============================
-total_value = state["last_value"]
+# =========================
+# 변화 여부
+# =========================
+changed = weights != state["last_weights"]
 
-alloc = {
-    "SLV": total_value * decision["SLV"],
-    "AGQ": total_value * decision["AGQ"],
-    "CASH": total_value * decision["CASH"]
-}
+# =========================
+# 메시지 생성 (항상 전송)
+# =========================
+msg = f"""
+📊 Daily Investment Bot
 
-cum_return = (total_value / START_CAPITAL - 1) * 100
+📅 {datetime.now().strftime('%Y-%m-%d')}
 
-# ==============================
-# ✉️ 텔레그램 메시지
-# ==============================
-message = f"""
-📊 은 투자 자동 추천 시스템
-
-📅 날짜: {datetime.today().strftime("%Y-%m-%d")}
-
-💰 현재 평가금액: {total_value:,.0f}원
-📈 누적 수익률: {cum_return:.2f}%
-
-━━━━━━━━━━━━━━
-📌 가격
+[📈 시장 수익률]
 SLV
-- 현재가: ${slv_today:.2f}
-- 일간: {slv_day:+.2f}%
-- 한달: {slv_month_chg:+.2f}%
+- 일간: {slv_day:.2f}%
+- 1개월: {slv_month_r:.2f}%
 
 AGQ
-- 현재가: ${agq_today:.2f}
-- 일간: {agq_day:+.2f}%
-- 한달: {agq_month_chg:+.2f}%
-━━━━━━━━━━━━━━
+- 일간: {agq_day:.2f}%
+- 1개월: {agq_month_r:.2f}%
 
-📌 추천 비중
-- SLV: {decision['SLV']*100:.0f}% → {alloc['SLV']:,.0f}원
-- AGQ: {decision['AGQ']*100:.0f}% → {alloc['AGQ']:,.0f}원
-- 현금: {decision['CASH']*100:.0f}% → {alloc['CASH']:,.0f}원
+[📦 추천 비중]
+SLV: {weights['SLV']*100:.0f}%
+AGQ: {weights['AGQ']*100:.0f}%
+현금: {weights['CASH']*100:.0f}%
 
-🧠 판단 이유
-- {decision['reason']}
+[🧠 판단 결과]
+{" / ".join(reason)}
+
+[🔔 비중 변화]
+{"변경 발생" if changed else "변경 없음 (유지)"}
 """
 
-requests.post(
-    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-    data={"chat_id": CHAT_ID, "text": message}
-)
+# =========================
+# 텔레그램 전송 (무조건)
+# =========================
+if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+    )
 
-# ==============================
-# 💾 상태 저장
-# ==============================
+# =========================
+# 상태 저장
+# =========================
+state["last_weights"] = weights
+
 with open(STATE_FILE, "w") as f:
-    json.dump(state, f, indent=2)
-
-print("✅ 실행 완료")
+    json.dump(state, f, indent=2, ensure_ascii=False)
