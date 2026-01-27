@@ -6,7 +6,7 @@ from datetime import datetime
 import numpy as np
 
 # =========================
-# 🔐 텔레그램
+# 텔레그램
 # =========================
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
@@ -18,14 +18,11 @@ START_CAPITAL = 2_000_000
 STATE_FILE = "portfolio_state.json"
 
 # =========================
-# 가격 조회 (완전 안전 버전)
+# 가격 조회 (안정 버전)
 # =========================
 def get_prices(ticker):
     df = yf.download(ticker, period="40d", progress=False)
-
-    close = df["Close"].dropna().to_numpy()
-
-    close = close.reshape(-1)  # 🔥 핵심 수정
+    close = df["Close"].dropna().to_numpy().reshape(-1)
 
     today = float(close[-1])
     yesterday = float(close[-2])
@@ -34,16 +31,23 @@ def get_prices(ticker):
     return today, yesterday, month_ago, close
 
 # =========================
-# 상태 불러오기
+# 상태 불러오기 (깨져있어도 복구)
 # =========================
+state = {
+    "last_weights": {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2},
+    "last_value": START_CAPITAL
+}
+
 if os.path.exists(STATE_FILE):
-    with open(STATE_FILE, "r", encoding="utf-8") as f:
-        state = json.load(f)
-else:
-    state = {
-        "last_weights": {"SLV": 0.4, "AGQ": 0.4, "CASH": 0.2},
-        "last_value": START_CAPITAL
-    }
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+            if "last_weights" in loaded:
+                state["last_weights"] = loaded["last_weights"]
+            if "last_value" in loaded:
+                state["last_value"] = loaded["last_value"]
+    except:
+        pass
 
 # =========================
 # 가격 수집
@@ -61,7 +65,7 @@ slv_month_r = (slv_today / slv_month - 1) * 100
 agq_month_r = (agq_today / agq_month - 1) * 100
 
 # =========================
-# 판단 로직
+# 판단 로직 (백테스트 기준 그대로)
 # =========================
 reason = []
 weights = state["last_weights"].copy()
@@ -80,6 +84,14 @@ if slv_today / slv_series[-20] < 1:
 changed = weights != state["last_weights"]
 
 # =========================
+# 금액 계산
+# =========================
+total = state["last_value"]
+slv_amt = total * weights["SLV"]
+agq_amt = total * weights["AGQ"]
+cash_amt = total * weights["CASH"]
+
+# =========================
 # 메시지
 # =========================
 message = f"""
@@ -87,7 +99,7 @@ message = f"""
 
 📅 {datetime.now().strftime('%Y-%m-%d')}
 
-[📈 오늘 변동]
+[📈 일간 변동]
 SLV: {slv_day:.2f}%
 AGQ: {agq_day:.2f}%
 
@@ -96,9 +108,9 @@ SLV: {slv_month_r:.2f}%
 AGQ: {agq_month_r:.2f}%
 
 [📦 추천 비중]
-SLV {weights['SLV']*100:.0f}% |
-AGQ {weights['AGQ']*100:.0f}% |
-현금 {weights['CASH']*100:.0f}%
+SLV {weights['SLV']*100:.0f}% ({slv_amt:,.0f}원)
+AGQ {weights['AGQ']*100:.0f}% ({agq_amt:,.0f}원)
+현금 {weights['CASH']*100:.0f}% ({cash_amt:,.0f}원)
 
 [🧠 판단 근거]
 {" / ".join(reason)}
@@ -108,7 +120,7 @@ AGQ {weights['AGQ']*100:.0f}% |
 """
 
 # =========================
-# 텔레그램 전송
+# 텔레그램 전송 (매일 무조건)
 # =========================
 requests.post(
     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
