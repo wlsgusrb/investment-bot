@@ -4,12 +4,13 @@ import os
 import requests
 from datetime import datetime, date
 
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+# 🔔 Telegram (고정)
+TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
+TELEGRAM_CHAT_ID = "-1003476098424"
 
 STATE_FILE = "portfolio_state.json"
 
-MA_PERIOD = 20
+MA_PERIOD = 20          # 20 x 15분봉
 INTERVAL = "15m"
 PERIOD = "5d"
 
@@ -29,7 +30,7 @@ def get_15m_prices(ticker):
 
     close = hist["Close"].dropna()
 
-    # ✅ 최소 수정: Series / DataFrame 모두 대응
+    # ✅ Series / DataFrame 모두 대응 (중요)
     if hasattr(close, "columns"):
         close = close.iloc[:, 0]
 
@@ -76,6 +77,7 @@ for ticker in ["SLV", "AGQ"]:
 
     state["last_trend"][ticker] = in_trend
 
+# 즉시 알림 전송
 for msg in alerts:
     send(msg)
 
