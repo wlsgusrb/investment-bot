@@ -4,15 +4,23 @@ import os
 import requests
 from datetime import datetime, date
 
-# 🔔 Telegram (고정)
+# 🔔 Telegram
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
 
 STATE_FILE = "portfolio_state.json"
 
+# 전략 설정
 MA_PERIOD = 20          # 20 x 15분봉
 INTERVAL = "15m"
 PERIOD = "5d"
+
+# 현재 보유 비중 (고정)
+WEIGHTS = {
+    "SLV": 0.4,
+    "AGQ": 0.4,
+    "CASH": 0.2
+}
 
 def send(msg):
     requests.post(
@@ -30,7 +38,7 @@ def get_15m_prices(ticker):
 
     close = hist["Close"].dropna()
 
-    # ✅ Series / DataFrame 모두 대응 (중요)
+    # Series / DataFrame 대응
     if hasattr(close, "columns"):
         close = close.iloc[:, 0]
 
@@ -38,14 +46,14 @@ def get_15m_prices(ticker):
         raise ValueError(f"{ticker} 데이터 부족")
 
     current = float(close.iloc[-1])
-    prev = float(close.iloc[-2])
     ma = float(close.iloc[-MA_PERIOD:].mean())
+    day_return = (current / float(close.iloc[-MA_PERIOD]) - 1) * 100
 
-    return current, prev, ma
+    return current, ma, day_return
 
 state = {
-    "last_trend": {"SLV": True, "AGQ": True},
-    "last_daily_check": ""
+    "last_trend": {"SLV": None, "AGQ": None},
+    "last_daily_report": ""
 }
 
 if os.path.exists(STATE_FILE):
@@ -58,18 +66,21 @@ if os.path.exists(STATE_FILE):
 now = datetime.now()
 today_str = date.today().isoformat()
 
-alerts = []
+daily_lines = []
+trend_alerts = []
 
 for ticker in ["SLV", "AGQ"]:
-    price, prev_price, ma = get_15m_prices(ticker)
+    price, ma, ret = get_15m_prices(ticker)
 
     in_trend = price >= ma
-    was_in_trend = state["last_trend"].get(ticker, True)
+    prev_trend = state["last_trend"].get(ticker)
 
-    # 🚨 15분봉 추세 이탈 즉시 알림
-    if was_in_trend and not in_trend:
-        alerts.append(
-            f"🚨 {ticker} 15분봉 추세 이탈\n"
+    # 🔔 추세 변화 알림 (변할 때만)
+    if prev_trend is not None and prev_trend != in_trend:
+        status = "상승 추세 진입" if in_trend else "추세 이탈"
+        trend_alerts.append(
+            f"🚨 {ticker} 15분봉 추세 변화\n"
+            f"상태: {status}\n"
             f"현재가: ${price:.2f}\n"
             f"20MA: ${ma:.2f}\n"
             f"시간: {now.strftime('%Y-%m-%d %H:%M')}"
@@ -77,24 +88,27 @@ for ticker in ["SLV", "AGQ"]:
 
     state["last_trend"][ticker] = in_trend
 
-# 즉시 알림 전송
-for msg in alerts:
-    send(msg)
-
-# ✅ 하루 1회 정상 작동 확인 알림
-if state["last_daily_check"] != today_str:
-    lines = []
-    for ticker in ["SLV", "AGQ"]:
-        status = "상승 추세 유지" if state["last_trend"][ticker] else "추세 이탈 상태"
-        lines.append(f"{ticker}: {status}")
-
-    send(
-        f"✅ 시스템 정상 작동 확인\n\n"
-        f"📅 {now.strftime('%Y-%m-%d %H:%M')}\n"
-        + "\n".join(lines)
+    trend_text = "상승 추세" if in_trend else "추세 이탈"
+    daily_lines.append(
+        f"{ticker}\n"
+        f"- 현재가: ${price:.2f}\n"
+        f"- 보유 비중: {WEIGHTS[ticker]*100:.0f}%\n"
+        f"- 상승률: {ret:.2f}%\n"
+        f"- 상태: {trend_text}"
     )
 
-    state["last_daily_check"] = today_str
+# 📣 추세 변화 알림
+for msg in trend_alerts:
+    send(msg)
+
+# ✅ 하루 1회 종합 리포트
+if state["last_daily_report"] != today_str:
+    send(
+        f"📊 Daily Silver Portfolio Report\n\n"
+        f"📅 {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+        + "\n\n".join(daily_lines)
+    )
+    state["last_daily_report"] = today_str
 
 with open(STATE_FILE, "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2, ensure_ascii=False)
