@@ -4,16 +4,20 @@ import pandas as pd
 from datetime import datetime, timedelta, timezone
 import os
 
-# 1. 개인 설정
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# ==========================================
+# 1. 개인 설정 (사용자 정보 입력됨)
+# ==========================================
+TOKEN = "7724330685:AAFO6h59Iu0V5v-oG5Wn8_6u5p4W_EPr1V8"
+CHAT_ID = "6161476106"
 KST = timezone(timedelta(hours=9))
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     params = {"chat_id": CHAT_ID, "text": message}
-    try: requests.get(url, params=params, timeout=10)
-    except: pass
+    try: 
+        requests.get(url, params=params, timeout=10)
+    except: 
+        pass
 
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1: return None
@@ -26,17 +30,27 @@ def calculate_rsi(prices, period=14):
     return float((100 - (100 / (1 + (avg_gain / avg_loss)))).iloc[-1])
 
 def analyze():
-    print(f"[{datetime.now(KST)}] 하이브리드 분석 시작...")
+    now_str = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{now_str}] 하이브리드 분석 시작...")
+    
     try:
-        # 데이터 가져오기 (15분봉 & 1시간봉)
-        slv_15m = yf.Ticker("SLV").history(period="1d", interval="15m")
-        slv_1h = yf.Ticker("SLV").history(period="1mo", interval="1h")
+        # 데이터 가져오기 (실시간 감시용 15분봉 & 전략용 1시간봉)
+        slv_ticker = yf.Ticker("SLV")
+        slv_15m = slv_ticker.history(period="1d", interval="15m")
+        slv_1h = slv_ticker.history(period="1mo", interval="1h")
 
-        if slv_15m.empty or slv_1h.empty: return
+        if slv_15m.empty or slv_1h.empty: 
+            print("데이터를 불러오지 못했습니다.")
+            return
 
         # 1. [15분봉] 급락 체크 (생존 로직)
         prices_15m = slv_15m['Close'].tail(8).values
-        drop = (prices_15m[-1] / max(prices_15m[:-1]) - 1) * 100
+        if len(prices_15m) > 1:
+            max_price_15m = max(prices_15m[:-1])
+            curr_price_15m = prices_15m[-1]
+            drop = (curr_price_15m / max_price_15m - 1) * 100
+        else:
+            drop = 0
         
         # 2. [1시간봉] 전략 체크 (RSI & 이평선)
         prices_1h = slv_1h['Close'].values
@@ -44,21 +58,39 @@ def analyze():
         rsi = calculate_rsi(prices_1h)
         ma20 = sum(prices_1h[-20:]) / 20
 
-        # 3. 상황별 추천 비중 결정 로직
+        # 3. 상황별 메시지 및 비중 결정
         msg = ""
-        if drop <= -5.0:
-            msg = f"🚨 [긴급 폭락 경보]\n현재가: ${curr_price:.2f}\n단기 하락률: {drop:.2f}%\n\n💡 추천 비중: [현금 100%]\n위험 구간입니다. 일단 피하세요!"
-        elif rsi <= 30 and curr_price < ma20 * 1.01:
-            msg = f"💰 [매수 타이밍]\n현재가: ${curr_price:.2f}\nRSI: {rsi:.2f}\n\n💡 추천 비중: [AGQ 80% / SLV 20%]\n저점입니다. 공격적 매수 구간!"
-        elif rsi >= 70 and curr_price > ma20 * 0.99:
-            msg = f"⚖️ [매도 타이밍]\n현재가: ${curr_price:.2f}\nRSI: {rsi:.2f}\n\n💡 추천 비중: [AGQ 10% / SLV 40% / 현금 50%]\n고점입니다. 수익을 실현하세요."
-        # 특별한 신호가 없으면 알림을 보내지 않음 (거래 횟수 조절)
         
+        # A. 긴급 상황 (5% 이상 폭락)
+        if drop <= -5.0:
+            msg = (f"🚨 [긴급 폭락 경보]\n"
+                   f"현재가: ${curr_price:.2f}\n"
+                   f"단기 하락률: {drop:.2f}%\n\n"
+                   f"💡 추천 비중: [현금 100%]\n"
+                   f"위험 구간입니다. 일단 피신하세요!")
+        
+        # B. 매수 구간 (RSI 30 이하 + 이평선 아래)
+        elif rsi <= 30 and curr_price < ma20 * 1.01:
+            msg = (f"💰 [매수 타이밍 - 저점 포착]\n"
+                   f"현재가: ${curr_price:.2f}\n"
+                   f"1시간 RSI: {rsi:.2f}\n\n"
+                   f"💡 추천 비중: [AGQ 80% / SLV 20%]\n"
+                   f"가격이 충분히 저렴합니다. 공격적 매수 추천!")
+        
+        # C. 매도 구간 (RSI 70 이상 + 이평선 위)
+        elif rsi >= 70 and curr_price > ma20 * 0.99:
+            msg = (f"⚖️ [매도 타이밍 - 수익 실현]\n"
+                   f"현재가: ${curr_price:.2f}\n"
+                   f"1시간 RSI: {rsi:.2f}\n\n"
+                   f"💡 추천 비중: [AGQ 10% / SLV 40% / 현금 50%]\n"
+                   f"과열 구간입니다. 수익을 챙기고 현금을 확보하세요.")
+
+        # 메시지 전송
         if msg:
             send_telegram(msg)
-            print(" > 신호 발생! 텔레그램 전송 완료.")
+            print(f" > 신호 발생! 메시지 전송 완료.")
         else:
-            print(f" > 현재 RSI {rsi:.2f}: 특이사항 없음 (관망)")
+            print(f" > 현재 RSI {rsi:.2f} / 하락률 {drop:.2f}%: 특이사항 없음 (관망 중)")
 
     except Exception as e:
         print(f"에러 발생: {e}")
