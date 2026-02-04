@@ -115,3 +115,4 @@ if now.hour == 23 and now.minute <= 15 and state.get("last_report_date") != toda
 # 7. 상태 저장
 with open(STATE_FILE, "w") as f:
     json.dump(state, f)
+send_msg("지금 알림 가면 성공!")
