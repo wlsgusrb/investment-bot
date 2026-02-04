@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 # 🔔 사용자 설정 (기존 정보 유지)
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
-STATE_FILE = "hybrid_trading_state.json"
+STATE_FILE = "portfolio_state.json"
 
 def send_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
