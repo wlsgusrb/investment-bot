@@ -40,10 +40,14 @@ def get_hybrid_data():
             s_15m = get_close(slv_15m).dropna()
             a_15m = get_close(agq_15m).dropna()
 
-            # 지표 계산
+            # 지표 계산 (오류 수정된 RSI 수식)
             ma10_1h = s_1h.rolling(window=10).mean().iloc[-1]
-            rsi_1h = (100 - (100 / (1 + (s_1h.diff().where(lambda x: x > 0, 0).rolling(14).mean() / 
-                                        -s_1h.diff().where(lambda x: x < 0, 0).rolling(14).mean()狂)))).iloc[-1]
+            
+            delta = s_1h.diff()
+            gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi_1h = (100 - (100 / (1 + rs))).iloc[-1]
 
             return s_15m.iloc[-1], a_15m.iloc[-1], ma10_1h, rsi_1h
         
@@ -86,7 +90,7 @@ try:
         tag = state.get("last_tag", "WAIT")
         guide = "횡보 중 (이전 비중 유지)"
 
-    # 알림 전송 (메시지에 현재가 상세 포함)
+    # 알림 전송 (신호가 변했을 때만)
     if state.get("last_tag") is None or tag != state["last_tag"]:
         msg = f"🔄 [Silver 신호 발생]\n\n" \
               f"💎 실시간 가격 정보\n" \
