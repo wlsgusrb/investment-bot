@@ -6,28 +6,33 @@ import os
 import warnings
 from datetime import datetime
 
-# 경고 무시 및 설정
+# 1. 경고 및 설정
 warnings.filterwarnings('ignore')
 
-# 🔔 사용자 설정 (기존 정보 유지)
+# 🔔 사용자 정보 (사용자님이 요청하신 값 그대로 유지)
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
-STATE_FILE = "portfolio_state.json"
+STATE_FILE = "portfolio_state.json"  # 2단계에서 말씀드린 대로 파일명 통일
 
 def send_msg(msg):
+    """텔레그램 메시지 전송 함수"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+        res = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+        if res.status_code == 200:
+            print("✅ 텔레그램 메시지 전송 성공!")
+        else:
+            print(f"❌ 전송 실패 (상태 코드: {res.status_code})")
     except Exception as e:
-        print(f"메시지 전송 에러: {e}")
+        print(f"❌ 메시지 전송 에러: {e}")
 
 def get_hybrid_data():
-    # 데이터 추출 (1시간봉 & 15분봉) - 프리/애프터장 포함을 위해 include_post=True
+    """데이터 수집 및 지표 계산"""
+    # 프리/애프터장 포함 데이터 수집
     df_1h = yf.download("SLV", period="5d", interval="1h", progress=False, include_post=True)
     df_15m = yf.download("SLV", period="2d", interval="15m", progress=False, include_post=True)
     df_agq_15m = yf.download("AGQ", period="2d", interval="15m", progress=False, include_post=True)
     
-    # 데이터 클리닝 (멀티인덱스 대응)
     def clean(df):
         if 'Close' in df.columns:
             res = df['Close']
@@ -39,18 +44,16 @@ def get_hybrid_data():
     slv_15m = clean(df_15m)
     agq_15m = clean(df_agq_15m)
 
-    # 1시간봉 지표 계산
+    # 지표 계산
     ma10_1h = slv_1h.rolling(window=10).mean().iloc[-1]
     delta = slv_1h.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rsi_1h = (100 - (100 / (1 + (gain / loss)))).iloc[-1]
     
-    # 현재가 (SLV, AGQ)
-    curr_slv = slv_15m.iloc[-1]
-    curr_agq = agq_15m.iloc[-1]
-    
-    return curr_slv, curr_agq, ma10_1h, rsi_1h
+    return slv_15m.iloc[-1], agq_15m.iloc[-1], ma10_1h, rsi_1h
+
+# --- 메인 실행 로직 ---
 
 # 1. 상태 로드
 if os.path.exists(STATE_FILE):
@@ -62,12 +65,12 @@ if os.path.exists(STATE_FILE):
 else:
     state = {"last_tag": None, "max_high": 0, "last_report_date": ""}
 
-# 2. 데이터 가져오기
+# 2. 데이터 수집
 now = datetime.now()
 try:
     curr_slv, curr_agq, ma_1h, rsi_1h = get_hybrid_data()
 except Exception as e:
-    print(f"데이터 가져오기 실패: {e}")
+    send_msg(f"❌ 데이터 수집 실패: {e}")
     exit()
 
 # 3. 전고점 관리 (15분봉 기준)
@@ -87,11 +90,13 @@ elif curr_slv < ma_1h * 0.995:
     guide = "🛡️ [방어] CASH 80%, SLV 20%" if tag == "DEFENSE" else "⚠️ [관망] CASH 50%, SLV 40%, AGQ 10%"
 else:
     tag = state.get("last_tag", "WAIT")
-    guide = "횡보 중 (기존 비중 유지)"
+    guide = "횡보 중 (이전 비중 유지)"
 
-# 5. 알림 전송 (신호 변화 시)
-if tag != state.get("last_tag"):
-    msg = f"🔄 [포지션 변경 알림]\n\n" \
+# 5. 알림 전송 (신호가 처음이거나 변했을 때만)
+# 처음 실행 시 무조건 한 번 알림을 보내도록 강제
+if state.get("last_tag") is None or tag != state.get("last_tag"):
+    msg = f"🔄 [Silver 포트폴리오 신호 발생]\n\n" \
+          f"⏰ 시간: {now.strftime('%H:%M')}\n" \
           f"🏷️ 상태: {tag}\n" \
           f"💰 SLV: ${curr_slv:.2f} / AGQ: ${curr_agq:.2f}\n" \
           f"📉 낙폭: {drop_15m:.2f}% / RSI: {rsi_1h:.1f}\n\n" \
@@ -99,20 +104,16 @@ if tag != state.get("last_tag"):
     send_msg(msg)
     state["last_tag"] = tag
 
-# 6. 매일 미국 본장 시작 알림 (정상 작동 확인용)
-# 서머타임 고려 없이 23:30분 기준 (또는 22:30분으로 수정 가능)
+# 6. 시스템 생존 보고 (밤 11시 30분대 실행 시)
 today_str = now.strftime('%Y-%m-%d')
-if now.hour == 23 and now.minute <= 15 and state.get("last_report_date") != today_str:
+if now.hour == 23 and 15 <= now.minute <= 45 and state.get("last_report_date") != today_str:
     report = f"📊 [시스템 정상 작동 보고]\n\n" \
-             f"📅 날짜: {now.strftime('%Y-%m-%d %H:%M')}\n" \
-             f"💎 현재가 정보\n" \
-             f"- SLV: ${curr_slv:.2f}\n" \
-             f"- AGQ: ${curr_agq:.2f}\n\n" \
+             f"📅 날짜: {today_str}\n" \
+             f"💎 현재가 SLV: ${curr_slv:.2f} / AGQ: ${curr_agq:.2f}\n" \
              f"현재 '{tag}' 상태로 운영 중입니다."
     send_msg(report)
     state["last_report_date"] = today_str
 
-# 7. 상태 저장
+# 7. 상태 저장 (이게 되어야 중복 알림이 안 옴)
 with open(STATE_FILE, "w") as f:
     json.dump(state, f)
-send_msg("지금 알림 가면 성공!")
