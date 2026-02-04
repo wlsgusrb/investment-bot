@@ -2,9 +2,9 @@ name: Silver Investment Bot
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # 5분마다 시도 (백업용)
-  workflow_dispatch:        # 수동 실행 버튼 허용
-  repository_dispatch:      # [추가] 외부 신호(UptimeRobot)를 받기 위한 설정
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+  repository_dispatch:
     types: [run_bot]
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: ambassadors/setup-python@v4
+        uses: actions/setup-python@v4  # <--- 이 부분 수정됨
         with:
           python-version: '3.9'
 
