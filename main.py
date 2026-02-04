@@ -4,7 +4,7 @@ import requests
 import json
 import os
 import warnings
-import time  # 재시도를 위한 라이브러리 추가
+import time
 from datetime import datetime
 
 warnings.filterwarnings('ignore')
@@ -21,18 +21,17 @@ def send_msg(msg):
         print(f"메시지 전송 에러: {e}")
 
 def get_hybrid_data():
-    # 데이터 수집 재시도 로직 (최대 3번)
     for i in range(3):
         try:
-            # 1시간봉과 15분봉 데이터를 각각 가져옴
-            slv_1h = yf.download("SLV", period="7d", interval="1h", progress=False, include_post=True)
-            slv_15m = yf.download("SLV", period="3d", interval="15m", progress=False, include_post=True)
-            agq_15m = yf.download("AGQ", period="3d", interval="15m", progress=False, include_post=True)
+            # 에러 방지를 위해 include_post를 제거하고 대신 충분한 기간의 데이터를 가져옴
+            # 최신 버전 yfinance가 아니어도 작동하도록 수정
+            slv_1h = yf.download("SLV", period="7d", interval="1h", progress=False)
+            slv_15m = yf.download("SLV", period="3d", interval="15m", progress=False)
+            agq_15m = yf.download("AGQ", period="3d", interval="15m", progress=False)
 
             if slv_1h.empty or slv_15m.empty:
-                raise ValueError("데이터가 비어있습니다.")
+                raise ValueError("데이터 수집 실패 (데이터가 비어있음)")
 
-            # 멀티인덱스/싱글인덱스 공통 처리
             def get_close(df):
                 if 'Close' in df.columns:
                     col = df['Close']
@@ -54,7 +53,7 @@ def get_hybrid_data():
         
         except Exception as e:
             if i < 2: 
-                time.sleep(5) # 5초 후 다시 시도
+                time.sleep(10)
                 continue
             else:
                 raise e
@@ -71,10 +70,8 @@ else:
 
 now = datetime.now()
 try:
-    # 실시간 데이터 확보
     curr_slv, curr_agq, ma_1h, rsi_1h = get_hybrid_data()
     
-    # 전고점 및 낙폭 계산
     if curr_slv > state.get("max_high", 0):
         state["max_high"] = float(curr_slv)
     drop_15m = (curr_slv / state["max_high"] - 1) * 100
@@ -93,22 +90,20 @@ try:
         tag = state.get("last_tag", "WAIT")
         guide = "횡보 중 (이전 비중 유지)"
 
-    # 알림 전송
+    # 알림 조건: 상태가 바뀌었거나, 최초 실행일 때
     if state.get("last_tag") is None or tag != state["last_tag"]:
         msg = f"🔄 [Silver 신호 발생]\n\n💰 SLV: ${curr_slv:.2f}\n💰 AGQ: ${curr_agq:.2f}\n🏷️ 상태: {tag}\n📊 RSI(1h): {rsi_1h:.1f}\n📉 낙폭: {drop_15m:.2f}%\n\n👉 {guide}"
         send_msg(msg)
         state["last_tag"] = tag
 
-    # 야간 보고 (23시)
+    # 야간 보고 (한국시간 23시)
     today_str = now.strftime('%Y-%m-%d')
     if now.hour == 23 and 15 <= now.minute <= 45 and state.get("last_report_date") != today_str:
         send_msg(f"📊 [생존 보고]\n- SLV: ${curr_slv:.2f}\n- AGQ: ${curr_agq:.2f}\n- 상태: {tag}")
         state["last_report_date"] = today_str
 
-    # 상태 저장
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
 except Exception as e:
-    # 실패 알림에 구체적인 에러 내용 포함
-    send_msg(f"❌ 데이터 수집 실패: {str(e)}")
+    send_msg(f"❌ 데이터 분석 오류: {str(e)}")
