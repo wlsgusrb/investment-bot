@@ -96,3 +96,6 @@ def analyze():
 
 if __name__ == "__main__":
     analyze()
+if __name__ == "__main__":
+    send_telegram("테스트 메시지: 봇이 살아있습니다!") # 이 줄을 추가
+    analyze()
