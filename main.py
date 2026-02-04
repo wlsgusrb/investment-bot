@@ -23,14 +23,12 @@ def send_msg(msg):
 def get_hybrid_data():
     for i in range(3):
         try:
-            # 에러 방지를 위해 include_post를 제거하고 대신 충분한 기간의 데이터를 가져옴
-            # 최신 버전 yfinance가 아니어도 작동하도록 수정
             slv_1h = yf.download("SLV", period="7d", interval="1h", progress=False)
             slv_15m = yf.download("SLV", period="3d", interval="15m", progress=False)
             agq_15m = yf.download("AGQ", period="3d", interval="15m", progress=False)
 
             if slv_1h.empty or slv_15m.empty:
-                raise ValueError("데이터 수집 실패 (데이터가 비어있음)")
+                raise ValueError("데이터 수집 실패")
 
             def get_close(df):
                 if 'Close' in df.columns:
@@ -44,10 +42,8 @@ def get_hybrid_data():
 
             # 지표 계산
             ma10_1h = s_1h.rolling(window=10).mean().iloc[-1]
-            delta = s_1h.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rsi_1h = (100 - (100 / (1 + (gain / loss)))).iloc[-1]
+            rsi_1h = (100 - (100 / (1 + (s_1h.diff().where(lambda x: x > 0, 0).rolling(14).mean() / 
+                                        -s_1h.diff().where(lambda x: x < 0, 0).rolling(14).mean()狂)))).iloc[-1]
 
             return s_15m.iloc[-1], a_15m.iloc[-1], ma10_1h, rsi_1h
         
@@ -90,16 +86,31 @@ try:
         tag = state.get("last_tag", "WAIT")
         guide = "횡보 중 (이전 비중 유지)"
 
-    # 알림 조건: 상태가 바뀌었거나, 최초 실행일 때
+    # 알림 전송 (메시지에 현재가 상세 포함)
     if state.get("last_tag") is None or tag != state["last_tag"]:
-        msg = f"🔄 [Silver 신호 발생]\n\n💰 SLV: ${curr_slv:.2f}\n💰 AGQ: ${curr_agq:.2f}\n🏷️ 상태: {tag}\n📊 RSI(1h): {rsi_1h:.1f}\n📉 낙폭: {drop_15m:.2f}%\n\n👉 {guide}"
+        msg = f"🔄 [Silver 신호 발생]\n\n" \
+              f"💎 실시간 가격 정보\n" \
+              f"- SLV 현재가: ${curr_slv:.2f}\n" \
+              f"- AGQ 현재가: ${curr_agq:.2f}\n" \
+              f"- 1h 이평선: ${ma_1h:.2f}\n\n" \
+              f"📊 상태 분석\n" \
+              f"- 현재 상태: {tag}\n" \
+              f"- RSI(1h): {rsi_1h:.1f}\n" \
+              f"- 고점대비 낙폭: {drop_15m:.2f}%\n\n" \
+              f"👉 행동 지침: {guide}"
         send_msg(msg)
         state["last_tag"] = tag
 
     # 야간 보고 (한국시간 23시)
     today_str = now.strftime('%Y-%m-%d')
     if now.hour == 23 and 15 <= now.minute <= 45 and state.get("last_report_date") != today_str:
-        send_msg(f"📊 [생존 보고]\n- SLV: ${curr_slv:.2f}\n- AGQ: ${curr_agq:.2f}\n- 상태: {tag}")
+        report = f"📊 [시스템 생존 보고]\n" \
+                 f"📅 날짜: {today_str}\n" \
+                 f"💰 SLV: ${curr_slv:.2f} / AGQ: ${curr_agq:.2f}\n" \
+                 f"📈 이평선: ${ma_1h:.2f}\n" \
+                 f"🏷️ 상태: {tag}\n" \
+                 f"✅ 시스템 정상 작동 중"
+        send_msg(report)
         state["last_report_date"] = today_str
 
     with open(STATE_FILE, "w") as f:
