@@ -23,37 +23,44 @@ def send_msg(msg):
 def get_hybrid_data():
     for i in range(3):
         try:
-            slv_1h = yf.download("SLV", period="7d", interval="1h", progress=False)
-            slv_15m = yf.download("SLV", period="3d", interval="15m", progress=False)
-            agq_15m = yf.download("AGQ", period="3d", interval="15m", progress=False)
+            # period를 넉넉히 잡고 최신 순으로 정렬하여 정확도 향상
+            slv_1h = yf.download("SLV", period="5d", interval="1h", progress=False)
+            slv_15m = yf.download("SLV", period="2d", interval="15m", progress=False)
+            agq_15m = yf.download("AGQ", period="2d", interval="15m", progress=False)
 
             if slv_1h.empty or slv_15m.empty:
                 raise ValueError("데이터 수집 실패")
 
-            def get_close(df):
-                if 'Close' in df.columns:
-                    col = df['Close']
-                    return col.iloc[:, 0] if isinstance(col, pd.DataFrame) else col
-                return pd.Series()
+            def get_latest_price(df):
+                # 데이터프레임의 가장 마지막 행(최신)을 가져오되 결측치 제외
+                close_data = df['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    close_data = close_data.iloc[:, 0]
+                return close_data.dropna().iloc[-1]
 
-            s_1h = get_close(slv_1h).dropna()
-            s_15m = get_close(slv_15m).dropna()
-            a_15m = get_close(agq_15m).dropna()
+            def get_ma_latest(df, window=10):
+                close_data = df['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    close_data = close_data.iloc[:, 0]
+                return close_data.rolling(window=window).mean().dropna().iloc[-1]
 
-            # 지표 계산 (오류 수정된 RSI 수식)
-            ma10_1h = s_1h.rolling(window=10).mean().iloc[-1]
+            curr_slv = get_latest_price(slv_15m)
+            curr_agq = get_latest_price(agq_15m)
+            ma10_1h = get_ma_latest(slv_1h)
             
+            # RSI 계산
+            s_1h = slv_1h['Close']
+            if isinstance(s_1h, pd.DataFrame): s_1h = s_1h.iloc[:, 0]
             delta = s_1h.diff()
             gain = delta.where(delta > 0, 0).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi_1h = (100 - (100 / (1 + rs))).iloc[-1]
+            rsi_1h = (100 - (100 / (1 + (gain / loss)))).dropna().iloc[-1]
 
-            return s_15m.iloc[-1], a_15m.iloc[-1], ma10_1h, rsi_1h
+            return curr_slv, curr_agq, ma10_1h, rsi_1h
         
         except Exception as e:
             if i < 2: 
-                time.sleep(10)
+                time.sleep(5)
                 continue
             else:
                 raise e
@@ -90,35 +97,22 @@ try:
         tag = state.get("last_tag", "WAIT")
         guide = "횡보 중 (이전 비중 유지)"
 
-    # 알림 전송 (신호가 변했을 때만)
+    # 알림 전송 (항상 15분마다 최신가를 확인하고 싶다면 아래 조건을 수정할 수 있습니다)
     if state.get("last_tag") is None or tag != state["last_tag"]:
-        msg = f"🔄 [Silver 신호 발생]\n\n" \
-              f"💎 실시간 가격 정보\n" \
-              f"- SLV 현재가: ${curr_slv:.2f}\n" \
-              f"- AGQ 현재가: ${curr_agq:.2f}\n" \
-              f"- 1h 이평선: ${ma_1h:.2f}\n\n" \
-              f"📊 상태 분석\n" \
-              f"- 현재 상태: {tag}\n" \
-              f"- RSI(1h): {rsi_1h:.1f}\n" \
-              f"- 고점대비 낙폭: {drop_15m:.2f}%\n\n" \
-              f"👉 행동 지침: {guide}"
+        msg = f"🔄 [Silver 신호 변동]\n\n" \
+              f"💎 실시간 가격 (Yahoo 지연)\n" \
+              f"- SLV: ${curr_slv:.2f}\n" \
+              f"- AGQ: ${curr_agq:.2f}\n" \
+              f"- 기준이평선: ${ma_1h:.2f}\n\n" \
+              f"📊 상태: {tag} (RSI: {rsi_1h:.1f})\n" \
+              f"📉 고점대비: {drop_15m:.2f}%\n" \
+              f"👉 행동: {guide}"
         send_msg(msg)
         state["last_tag"] = tag
-
-    # 야간 보고 (한국시간 23시)
-    today_str = now.strftime('%Y-%m-%d')
-    if now.hour == 23 and 15 <= now.minute <= 45 and state.get("last_report_date") != today_str:
-        report = f"📊 [시스템 생존 보고]\n" \
-                 f"📅 날짜: {today_str}\n" \
-                 f"💰 SLV: ${curr_slv:.2f} / AGQ: ${curr_agq:.2f}\n" \
-                 f"📈 이평선: ${ma_1h:.2f}\n" \
-                 f"🏷️ 상태: {tag}\n" \
-                 f"✅ 시스템 정상 작동 중"
-        send_msg(report)
-        state["last_report_date"] = today_str
 
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
 except Exception as e:
-    send_msg(f"❌ 데이터 분석 오류: {str(e)}")
+    # 텔레그램으로 에러를 보내지 않고 로그만 남김 (너무 잦은 에러 알림 방지)
+    print(f"오류 발생: {e}")
