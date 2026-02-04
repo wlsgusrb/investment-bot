@@ -1,101 +1,135 @@
 import yfinance as yf
-import requests
 import pandas as pd
-from datetime import datetime, timedelta, timezone
+import requests
+import json
 import os
+import warnings
+import time
+from datetime import datetime, timedelta
 
-# 1. 개인 설정
-TOKEN = "7724330685:AAFO6h59Iu0V5v-oG5Wn8_6u5p4W_EPr1V8"
-CHAT_ID = "6161476106"
-KST = timezone(timedelta(hours=9))
+warnings.filterwarnings('ignore')
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    params = {"chat_id": CHAT_ID, "text": message}
-    try: requests.get(url, params=params, timeout=10)
-    except: pass
+# [고정] 사용자님 기존 설정
+TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
+TELEGRAM_CHAT_ID = "-1003476098424"
+STATE_FILE = "portfolio_state.json"
 
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1: return None
-    df = pd.DataFrame(prices, columns=['close'])
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).fillna(0)
-    loss = (-delta.where(delta < 0, 0)).fillna(0)
-    avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
-    return float((100 - (100 / (1 + (avg_gain / avg_loss)))).iloc[-1])
-
-def analyze():
-    now = datetime.now(KST)
-    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] 하이브리드 전략 분석 중...")
-    
+def send_msg(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        slv = yf.Ticker("SLV")
-        slv_15m = slv.history(period="1d", interval="15m")
-        slv_1h = slv.history(period="1mo", interval="1h")
-
-        if slv_15m.empty or slv_1h.empty: return
-
-        # 1. 급락 체크 (-5%)
-        prices_15m = slv_15m['Close'].tail(8).values
-        drop = (prices_15m[-1] / max(prices_15m[:-1]) - 1) * 100 if len(prices_15m) > 1 else 0
-        
-        # 2. 전략 지표 (RSI & MA20)
-        prices_1h = slv_1h['Close'].values
-        curr_price = prices_1h[-1]
-        rsi = calculate_rsi(prices_1h)
-        ma20 = sum(prices_1h[-20:]) / 20
-
-        msg = ""
-
-        # [상황 A] 비상 상황 (폭락)
-        if drop <= -5.0:
-            msg = f"🚨 [긴급 폭락 경보]\n현재가: ${curr_price:.2f}\n하락률: {drop:.2f}%\n💡 추천: [전량 현금화]"
-
-        # [상황 B] 매수 타이밍 (RSI 30 이하)
-        elif rsi <= 30 and curr_price < ma20 * 1.01:
-            msg = f"💰 [매수 타이밍]\nRSI: {rsi:.2f}\n💡 추천: [AGQ 80% / SLV 20%]\n저점 포착, 공격적 진입!"
-
-        # [상황 C] 분할 매도 타이밍 (단계별 수익 실현)
-        elif rsi >= 70 and curr_price > ma20 * 0.98:
-            if rsi >= 85:
-                msg = f"🔥 [분할 매도 - 3단계]\nRSI: {rsi:.2f}\n💡 추천: [현금 80% / SLV 20%]\n극대과열! 수익을 거의 다 챙기세요."
-            elif rsi >= 80:
-                msg = f"⚖️ [분할 매도 - 2단계]\nRSI: {rsi:.2f}\n💡 추천: [현금 60% / SLV 40%]\n고점 부근입니다. 비중을 더 줄이세요."
-            else:
-                msg = f"✅ [분할 매도 - 1단계]\nRSI: {rsi:.2f}\n💡 추천: [현금 30% / SLV 40% / AGQ 30%]\n수익 실현 시작! 나머지는 더 가져가 봅니다."
-
-        # [상황 D] 24시간 주기 정기 보고
-        report_file = "last_report.txt"
-        should_report = False
-        
-        if not os.path.exists(report_file):
-            should_report = True # 처음 실행 시 즉시 보고
-        else:
-            with open(report_file, "r") as f:
-                last_time = datetime.fromisoformat(f.read())
-            if now - last_time >= timedelta(hours=24):
-                should_report = True
-
-        if should_report and not msg: # 매매 신호가 없을 때만 정기 보고
-            msg = (f"☀️ [24시간 정기 생존 보고]\n"
-                   f"현재가: ${curr_price:.2f}\n"
-                   f"RSI: {rsi:.2f}\n"
-                   f"상태: 정상 감시 중 (신호 없음)")
-            with open(report_file, "w") as f:
-                f.write(now.isoformat())
-        elif msg: # 매매 신호가 발생했다면 보고 시간 갱신 (보고를 대신함)
-            with open(report_file, "w") as f:
-                f.write(now.isoformat())
-
-        if msg:
-            send_telegram(msg)
-
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
     except Exception as e:
-        print(f"에러: {e}")
+        print(f"메시지 전송 에러: {e}")
 
-if __name__ == "__main__":
-    analyze()
-if __name__ == "__main__":
-    send_telegram("테스트 메시지: 봇이 살아있습니다!") # 이 줄을 추가
-    analyze()
+def get_hybrid_data():
+    for i in range(3):
+        try:
+            slv_1h = yf.download("SLV", period="5d", interval="1h", progress=False)
+            slv_15m = yf.download("SLV", period="2d", interval="15m", progress=False)
+            agq_15m = yf.download("AGQ", period="2d", interval="15m", progress=False)
+            
+            if slv_1h.empty or slv_15m.empty:
+                raise ValueError("데이터 수집 실패")
+
+            def get_latest_price(df):
+                close_data = df['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    close_data = close_data.iloc[:, 0]
+                return close_data.dropna().iloc[-1]
+
+            def get_ma_latest(df, window=10):
+                close_data = df['Close']
+                if isinstance(close_data, pd.DataFrame):
+                    close_data = close_data.iloc[:, 0]
+                return close_data.rolling(window=window).mean().dropna().iloc[-1]
+
+            curr_slv = get_latest_price(slv_15m)
+            curr_agq = get_latest_price(agq_15m)
+            ma10_1h = get_ma_latest(slv_1h)
+
+            s_1h = slv_1h['Close']
+            if isinstance(s_1h, pd.DataFrame): s_1h = s_1h.iloc[:, 0]
+            delta = s_1h.diff()
+            gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rsi_1h = (100 - (100 / (1 + (gain / loss)))).dropna().iloc[-1]
+            
+            return curr_slv, curr_agq, ma10_1h, rsi_1h
+
+        except Exception as e:
+            if i < 2:
+                time.sleep(5)
+                continue
+            else:
+                raise e
+
+# --- 메인 실행 ---
+if os.path.exists(STATE_FILE):
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+    except:
+        state = {"last_tag": None, "max_high": 0, "last_report_date": ""}
+else:
+    state = {"last_tag": None, "max_high": 0, "last_report_date": ""}
+
+# KST(한국시간) 기준 날짜
+now = datetime.now()
+today_str = now.strftime('%Y-%m-%d')
+
+try:
+    curr_slv, curr_agq, ma_1h, rsi_1h = get_hybrid_data()
+
+    if curr_slv > state.get("max_high", 0):
+        state["max_high"] = float(curr_slv)
+    
+    drop_15m = (curr_slv / state["max_high"] - 1) * 100
+
+    # [수정] 기존 로직에 '분할 매도' 단계 추가
+    if drop_15m <= -10.0:
+        tag = "PANIC_EXIT"
+        guide = "🚨 [긴급] 전량 현금화 (CASH 100%)"
+    elif rsi_1h >= 70:
+        if rsi_1h >= 85:
+            tag = "SELL_STEP_3"
+            guide = "🔥 [익절-3단계] CASH 80%, SLV 20% (매도 권장)"
+        elif rsi_1h >= 80:
+            tag = "SELL_STEP_2"
+            guide = "⚖️ [익절-2단계] CASH 60%, SLV 40%"
+        else:
+            tag = "SELL_STEP_1"
+            guide = "✅ [익절-1단계] CASH 30%, SLV 40%, AGQ 30%"
+    elif curr_slv > ma_1h * 1.005:
+        tag = "AGGRESSIVE" if rsi_1h > 65 else "NORMAL"
+        guide = "🔥 [상승] AGQ 80%, SLV 20%" if tag == "AGGRESSIVE" else "📈 [안정] AGQ 40%, SLV 40%, CASH 20%"
+    elif curr_slv < ma_1h * 0.995:
+        tag = "DEFENSE" if drop_15m <= -5.0 else "WAIT"
+        guide = "🛡️ [방어] CASH 80%, SLV 20%" if tag == "DEFENSE" else "⚠️ [관망] CASH 50%, SLV 40%, AGQ 10%"
+    else:
+        tag = state.get("last_tag", "WAIT")
+        guide = "횡보 중 (이전 비중 유지)"
+
+    # [수정] 신호 변동 알림 + 24시간 정기 보고 통합
+    is_new_signal = (state.get("last_tag") is None or tag != state["last_tag"])
+    is_time_for_report = (state.get("last_report_date") != today_str)
+
+    if is_new_signal or is_time_for_report:
+        msg_header = "🔄 [Silver 신호 변동]" if is_new_signal else "☀️ [24시간 정기 보고]"
+        msg = f"{msg_header}\n\n" \
+              f"💎 실시간 가격\n" \
+              f"- SLV: ${curr_slv:.2f}\n" \
+              f"- AGQ: ${curr_agq:.2f}\n" \
+              f"- 기준이평선: ${ma_1h:.2f}\n\n" \
+              f"📊 상태: {tag} (RSI: {rsi_1h:.1f})\n" \
+              f"📉 고점대비: {drop_15m:.2f}%\n" \
+              f"👉 행동: {guide}"
+        
+        send_msg(msg)
+        state["last_tag"] = tag
+        state["last_report_date"] = today_str # 전송 후 날짜 갱신
+
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+except Exception as e:
+    print(f"오류 발생: {e}")
