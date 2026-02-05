@@ -4,10 +4,11 @@ import requests
 import json
 import os
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 
 warnings.filterwarnings('ignore')
 
+# [1. 사용자 설정]
 TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
 TELEGRAM_CHAT_ID = "-1003476098424"
 STATE_FILE = "portfolio_state.json"
@@ -16,83 +17,95 @@ def send_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
-    except Exception as e:
-        print(f"메시지 전송 에러: {e}")
+    except Exception as e: print(f"텔레그램 에러: {e}")
 
-def get_realtime_data():
-    try:
-        # 3번 코드처럼 SLV 데이터를 1시간/15분봉으로 수집
-        ticker = "SLV"
-        data_1h = yf.download(ticker, period="5d", interval="1h", progress=False)
-        data_15m = yf.download(ticker, period="2d", interval="15m", progress=False)
-        
-        if data_1h.empty or data_15m.empty: raise ValueError("데이터 실패")
+def get_strategy_data():
+    ticker = "SLV"
+    # 일봉 데이터로 묵직한 지표 계산
+    df = yf.download(ticker, period="40d", interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
 
-        curr_price = float(data_15m['Close'].iloc[-1])
-        
-        # [3번 코드 기준] 최근 고점 (1시간 봉의 High 값 중 가장 높은 값)
-        # 3번 코드에서 의도했던 '최근 고점 대비 하락'을 정확히 구현합니다.
-        max_high = float(data_1h['High'].iloc[-1]) 
-        
-        # 추세 지표 (MA10, RSI)
-        close_series = data_1h['Close'].squeeze()
-        ma10_1h = float(close_series.rolling(window=10).mean().iloc[-1])
-        
-        delta = close_series.diff()
-        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rsi_1h = float(100 - (100 / (1 + (gain / loss).iloc[-1])))
-        
-        return curr_price, ma10_1h, rsi_1h, max_high
-    except Exception as e:
-        raise e
+    curr_price = float(df['Close'].iloc[-1])
+    prev_high = float(df['High'].iloc[-2])
+    ma20 = float(df['MA20'].iloc[-1])
+    rsi = float(df['RSI'].iloc[-1])
+    drop_rate = (curr_price / prev_high - 1) * 100
+    
+    return curr_price, ma20, rsi, drop_rate
 
+# 상태 관리
 if os.path.exists(STATE_FILE):
     try:
         with open(STATE_FILE, "r") as f: state = json.load(f)
-    except: state = {"last_guide": "", "last_report_date": ""}
+    except: state = {"last_tag": "", "last_report_date": ""}
 else:
-    state = {"last_guide": "", "last_report_date": ""}
-
-now = datetime.now()
-today_str = now.strftime('%Y-%m-%d')
+    state = {"last_tag": "", "last_report_date": ""}
 
 try:
-    curr_price, ma_1h, rsi_1h, max_high = get_realtime_data()
-    drop_from_high = (curr_price / max_high - 1) * 100
+    curr_price, ma20, rsi, drop_rate = get_strategy_data()
+    
+    # 한국 시간 설정 (UTC+9)
+    now_utc = datetime.utcnow()
+    now_kor = now_utc + timedelta(hours=9)
+    today_str = now_kor.strftime('%Y-%m-%d')
+    current_hour = now_kor.hour
 
-    # [3번 코드와 동일한 전략]
-    # 1. 폭락 감지 (3번 코드 기준인 -10.0% 또는 설정하신 민감도 적용)
-    # 아까 3번 코드 본문에는 -10.0%였으므로 그대로 맞춥니다.
-    if drop_from_high <= -10.0:
-        tag, guide = "PANIC_EXIT", "🚨 전량 현금화 (폭락 감지)"
-    # 2. RSI 단계별 분할 매도
-    elif rsi_1h >= 70:
-        if rsi_1h >= 85: tag, guide = "SELL_3", "🔥 현금 80%"
-        elif rsi_1h >= 80: tag, guide = "SELL_2", "⚖️ 현금 60%"
-        else: tag, guide = "SELL_1", "✅ 현금 30%"
-    # 3. 이평선 기준 상승/하락 추세
-    elif curr_price > ma_1h * 1.005:
-        tag = "AGGRESSIVE" if rsi_1h > 65 else "NORMAL"
-        guide = "🔥 AGQ 80%" if tag == "AGGRESSIVE" else "📈 AGQ 40%, SLV 40%"
-    elif curr_price < ma_1h * 0.995:
-        tag = "DEFENSE" if drop_from_high <= -5.0 else "WAIT"
-        guide = "🛡️ 현금 80%" if tag == "DEFENSE" else "⚠️ 현금 50%, SLV 40%"
-    # 4. 횡보장 (이전 상태 유지)
+    # --- 전략 로직 (백테스트 성공 버전) ---
+    if drop_rate <= -10.0:
+        tag, alloc = "PANIC_EXIT", "현금 100% (전량매도)"
+    elif rsi >= 80:
+        tag, alloc = "SELL_80", "현금 80% : AGQ 10% : SLV 10%"
+    elif rsi >= 75:
+        tag, alloc = "SELL_30", "현금 30% : AGQ 35% : SLV 35%"
+    elif curr_price > ma20 * 1.02:
+        tag, alloc = "NORMAL", "현금 20% : AGQ 40% : SLV 40%"
+    elif curr_price < ma20 * 0.98:
+        tag, alloc = "WAIT", "현금 50% : AGQ 10% : SLV 40%"
     else:
         tag = state.get("last_tag", "WAIT")
-        guide = state.get("last_guide", "⚠️ 현금 50%, SLV 40%")
+        # 횡보 시 태그에 따른 비중 안내
+        alloc_map = {
+            "PANIC_EXIT": "현금 100%", "SELL_80": "현금 80% : AGQ 10% : SLV 10%",
+            "SELL_30": "현금 30% : AGQ 35% : SLV 35%", "NORMAL": "현금 20% : AGQ 40% : SLV 40%",
+            "WAIT": "현금 50% : AGQ 10% : SLV 40%"
+        }
+        alloc = alloc_map.get(tag, "비중 유지")
 
-    is_guide_changed = (state.get("last_guide") != guide)
-    is_daily_report = (state.get("last_report_date") != today_str)
+    # [조건 1] 전략 태그가 바뀌었을 때 (실시간 알림)
+    is_changed = (state.get("last_tag") != tag)
+    
+    # [조건 2] 아침 9시 정기 보고 (하루 한 번)
+    # 9시가 되었고, 오늘 아직 보고를 안 했다면 발송
+    is_report_time = (current_hour == 9 and state.get("last_report_date") != today_str)
 
-    if is_guide_changed or is_daily_report:
-        title = "🔄 [Silver 비중 변동]" if is_guide_changed else "☀️ [정기 보고]"
-        msg = f"{title}\n📊 상태: {tag}\n📉 고점대비: {drop_from_high:.2f}%\n👉 행동: {guide}"
+    if is_changed or is_report_time:
+        if is_changed:
+            title = "🔄 [긴급! 전략 변동 알림]"
+        else:
+            title = "☀️ [아침 정기 보고 - 시스템 정상]"
+
+        msg = (f"{title}\n\n"
+               f"📅 날짜: {today_str}\n"
+               f"📊 현재 상태: {tag}\n"
+               f"💡 권장 비중: {alloc}\n\n"
+               f"------------------------\n"
+               f"💰 현재가: ${curr_price:.2f}\n"
+               f"📈 RSI: {rsi:.1f}\n"
+               f"📉 고점대비: {drop_rate:.1f}%\n"
+               f"------------------------\n"
+               f"✅ 봇이 시장을 24시간 감시 중입니다.")
+        
         send_msg(msg)
         
-        state.update({"last_tag": tag, "last_guide": guide, "last_report_date": today_str})
+        # 상태 저장
+        state.update({"last_tag": tag, "last_report_date": today_str})
         with open(STATE_FILE, "w") as f: json.dump(state, f)
 
 except Exception as e:
-    send_msg(f"❌ 봇 에러: {str(e)}")
+    print(f"오류 발생: {e}")
