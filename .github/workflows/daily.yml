@@ -1,16 +1,19 @@
 name: Silver Bot Auto Run
 
 on:
+  # 1. 15분마다 스스로 실행 (보험용)
   schedule:
     - cron: '*/15 * * * *'
+  # 2. 깃허브 버튼으로 직접 실행
   workflow_dispatch:
-  # [추가] 외부 크론잡 서비스(cron-job.org 등)가 깨울 수 있게 허용
+  # 3. [핵심] 외부 크론잡(POST 방식) 신호 수신
   repository_dispatch:
     types: [external_cron]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 파일 쓰기 권한 (상태 저장용)
     permissions:
       contents: write
 
@@ -34,5 +37,6 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          # portfolio_state.json 파일이 변경되었을 때만 푸시
           git add portfolio_state.json
           git diff --quiet && git diff --staged --quiet || (git commit -m "Update portfolio state" && git push)
