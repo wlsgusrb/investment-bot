@@ -1,105 +1,109 @@
 import yfinance as yf
 import pandas as pd
-import time
-from datetime import datetime
+import requests
+import json
+import os
 import warnings
+from datetime import datetime, timedelta
 
 warnings.filterwarnings('ignore')
 
-# ==========================================
-# 1. 투자 설정 (튜닝된 수치 적용)
-# ==========================================
-TICKER = "SLV"
-CASH_TICKER = "CASH"  # 현금 보유 시 표시용
+# [1. 사용자 설정]
+TELEGRAM_TOKEN = "8554003778:AAFfIJzzeaPfymzoVbzrhGaOXSB8tQYGVNw"
+TELEGRAM_CHAT_ID = "-1003476098424"
+STATE_FILE = "portfolio_state.json"
 
-# 비중 설정 (C: Cash, A: AGQ(2x), S: SLV(1x))
-ALLOCATION = {
-    "PANIC_EXIT": {"Cash": 1.0, "AGQ": 0.0, "SLV": 0.0}, # 현금 100%
-    "SELL_83":    {"Cash": 0.7, "AGQ": 0.15, "SLV": 0.15}, # 수익 확정
-    "SELL_78":    {"Cash": 0.4, "AGQ": 0.3, "SLV": 0.3},  # 분할 익절
-    "NORMAL":     {"Cash": 0.1, "AGQ": 0.45, "SLV": 0.45}, # 공격형 투자
-    "WAIT":       {"Cash": 0.4, "AGQ": 0.2, "SLV": 0.4}   # 방어형 투자
-}
-
-# 상태 저장 변수 (횡보장 판단용)
-last_status = "WAIT" 
-
-def get_market_data():
-    """실시간 시장 데이터 수집 및 지표 계산"""
+def send_msg(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        df = yf.download(TICKER, period="60d", interval="1d", progress=False)
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        
-        # 지표 계산
-        df['MA20'] = df['Close'].rolling(window=20).mean()
-        delta = df['Close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
-        
-        return df.iloc[-1], df.iloc[-2] # 오늘 데이터, 어제 데이터
-    except Exception as e:
-        print(f"데이터 수집 중 오류: {e}")
-        return None, None
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+    except Exception as e: print(f"텔레그램 에러: {e}")
 
-def decide_strategy(curr, prev_day, current_status):
-    """튜닝된 횡보장 필터 로직 적용"""
-    price = float(curr['Close'])
-    ma20 = float(curr['MA20'])
-    rsi = float(curr['RSI'])
-    prev_high = float(prev_day['High'])
+def get_strategy_data():
+    ticker = "SLV"
+    df = yf.download(ticker, period="40d", interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     
-    # 1. 폭락 감지 (패닉 셀)
-    drop_rate = (price / prev_high - 1) * 100
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+    curr_price = float(df['Close'].iloc[-1])
+    prev_high = float(df['High'].iloc[-2])
+    ma20 = float(df['MA20'].iloc[-1])
+    rsi = float(df['RSI'].iloc[-1])
+    drop_rate = (curr_price / prev_high - 1) * 100
+    
+    return curr_price, ma20, rsi, drop_rate
+
+# 상태 관리
+if os.path.exists(STATE_FILE):
+    try:
+        with open(STATE_FILE, "r") as f: state = json.load(f)
+    except: state = {"last_tag": "", "last_report_date": ""}
+else:
+    state = {"last_tag": "", "last_report_date": ""}
+
+try:
+    curr_price, ma20, rsi, drop_rate = get_strategy_data()
+    
+    now_utc = datetime.utcnow()
+    now_kor = now_utc + timedelta(hours=9)
+    today_str = now_kor.strftime('%Y-%m-%d')
+    current_hour = now_kor.hour
+
+    # --- [수정 구간] 전략 로직 (백테스트 성공 수치 반영) ---
     if drop_rate <= -10.0:
-        return "PANIC_EXIT"
-    
-    # 2. 과열 감지 (익절)
-    if rsi >= 83: return "SELL_83"
-    if rsi >= 78: return "SELL_78"
-    
-    # 3. 추세 판단 (±3% 횡보장 필터 핵심)
-    dist = price / ma20
-    
-    if dist > 1.03:    # 3% 이상 상방 돌파 시만 상승장으로 인정
-        return "NORMAL"
-    elif dist < 0.97:  # 3% 이상 하방 돌파 시만 하락장으로 인정
-        return "WAIT"
+        tag, alloc = "PANIC_EXIT", "현금 100% (전량매도)"
+    elif rsi >= 83:  # 기존 80 -> 83 상향
+        tag, alloc = "SELL_83", "현금 70% : AGQ 15% : SLV 15%"
+    elif rsi >= 78:  # 기존 75 -> 78 상향
+        tag, alloc = "SELL_78", "현금 40% : AGQ 30% : SLV 30%"
+    elif curr_price > ma20 * 1.03:  # 기존 1.02 -> 1.03 상향 (횡보장 필터 강화)
+        tag, alloc = "NORMAL", "현금 10% : AGQ 45% : SLV 45%"
+    elif curr_price < ma20 * 0.97:  # 기존 0.98 -> 0.97 하향 (횡보장 필터 강화)
+        tag, alloc = "WAIT", "현금 40% : AGQ 20% : SLV 40%"
     else:
-        # ±3% 이내 횡보 시에는 '이전 상태'를 그대로 유지 (잦은 매매 방지)
-        return current_status
+        # 횡보 구간 (±3% 이내) 시 이전 상태 유지
+        tag = state.get("last_tag", "WAIT")
+        alloc_map = {
+            "PANIC_EXIT": "현금 100%", 
+            "SELL_83": "현금 70% : AGQ 15% : SLV 15%",
+            "SELL_78": "현금 40% : AGQ 30% : SLV 30%", 
+            "NORMAL": "현금 10% : AGQ 45% : SLV 45%",
+            "WAIT": "현금 40% : AGQ 20% : SLV 40%"
+        }
+        alloc = alloc_map.get(tag, "비중 유지")
 
-def execute_trade(status):
-    """최종 결정된 비중에 따라 매매 지시 (출력용)"""
-    alloc = ALLOCATION[status]
-    print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 매매 보고서")
-    print(f"설정된 상태: {status}")
-    print(f"최종 비중 -> 현금: {alloc['Cash']*100:.0f}% | AGQ(2x): {alloc['AGQ']*100:.0f}% | SLV(1x): {alloc['SLV']*100:.0f}%")
-    print("--------------------------------------------------")
-
-# ==========================================
-# 2. 실전 루프 가동
-# ==========================================
-print("🚀 튜닝된 은 매매 봇(횡보장 강화 버전) 가동을 시작합니다.")
-
-while True:
-    now = datetime.now()
-    # 장 중에만 작동하도록 설정 가능 (여기서는 테스트를 위해 즉시 실행 루프)
+    # [조건 1] 전략 태그가 바뀌었을 때 (실시간 알림)
+    is_changed = (state.get("last_tag") != tag)
     
-    curr_data, prev_data = get_market_data()
-    
-    if curr_data is not None:
-        # 새로운 상태 결정
-        new_status = decide_strategy(curr_data, prev_data, last_status)
-        
-        # 상태 변화가 있을 때만 매매 실행 (또는 주기적 보고)
-        if new_status != last_status:
-            print(f"📢 상태 변경 감지: {last_status} -> {new_status}")
-            execute_trade(new_status)
-            last_status = new_status
+    # [조건 2] 아침 9시 정기 보고
+    is_report_time = (current_hour == 9 and state.get("last_report_date") != today_str)
+
+    if is_changed or is_report_time:
+        if is_changed:
+            title = "🔄 [긴급! 전략 변동 알림]"
         else:
-            print(f"😴 현재 {last_status} 상태 유지 중... (가격: {curr_data['Close']:.2f}, RSI: {curr_data['RSI']:.1f})")
-            
-    # 1시간마다 체크 (실전 매매 주기에 맞춰 조절)
-    time.sleep(3600)
+            title = "☀️ [아침 정기 보고 - 시스템 정상]"
+
+        msg = (f"{title}\n\n"
+               f"📅 날짜: {today_str}\n"
+               f"📊 현재 상태: {tag}\n"
+               f"💡 권장 비중: {alloc}\n\n"
+               f"------------------------\n"
+               f"💰 현재가: ${curr_price:.2f}\n"
+               f"📈 RSI: {rsi:.1f}\n"
+               f"📉 고점대비: {drop_rate:.1f}%\n"
+               f"------------------------\n"
+               f"✅ 봇이 시장을 24시간 감시 중입니다.")
+        
+        send_msg(msg)
+        
+        state.update({"last_tag": tag, "last_report_date": today_str})
+        with open(STATE_FILE, "w") as f: json.dump(state, f)
+
+except Exception as e:
+    print(f"오류 발생: {e}")
