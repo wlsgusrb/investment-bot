@@ -21,24 +21,28 @@ def send_msg(msg):
         print(f"메시지 전송 에러: {e}")
 
 def get_realtime_data():
-    # SLV 대신 24시간 돌아가는 은 선물(SI=F) 데이터를 가져와 속도를 높입니다.
     try:
-        # 실시간 변동을 위해 1분봉으로 최근 데이터를 가져옵니다.
+        # 실시간 변동을 위해 24시간 은 선물(SI=F) 데이터 사용
         silver_now = yf.download("SI=F", period="1d", interval="1m", progress=False)
         silver_1h = yf.download("SI=F", period="5d", interval="1h", progress=False)
         
         if silver_now.empty or silver_1h.empty: raise ValueError("데이터 수집 실패")
 
-        curr_price = silver_now['Close'].dropna().iloc[-1]
-        # 최근 1시간 내 최고가 (실시간 대응용)
-        max_high = silver_1h['High'].iloc[-2:].max() 
+        # [수정] .iloc[-1] 뒤에 .item()이나 인덱싱을 확실히 하여 단일 값 추출
+        curr_price = float(silver_now['Close'].iloc[-1])
         
-        # MA10 및 RSI 계산 (1시간봉 기준)
-        ma10_1h = silver_1h['Close'].rolling(window=10).mean().dropna().iloc[-1]
-        delta = silver_1h['Close'].diff()
+        # [수정] 최근 2시간 내 최고가 추출 (에러 방지를 위해 float 변환)
+        max_high = float(silver_1h['High'].iloc[-2:].max())
+        
+        # MA10 및 RSI 계산 (단일 시리즈로 변환하여 에러 방지)
+        close_series = silver_1h['Close'].squeeze()
+        ma10_1h = float(close_series.rolling(window=10).mean().iloc[-1])
+        
+        delta = close_series.diff()
         gain = delta.where(delta > 0, 0).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rsi_1h = (100 - (100 / (1 + (gain / loss)))).dropna().iloc[-1]
+        rs = gain / loss
+        rsi_1h = float(100 - (100 / (1 + rs.iloc[-1])))
         
         return curr_price, ma10_1h, rsi_1h, max_high
     except Exception as e:
@@ -59,7 +63,7 @@ try:
     curr_price, ma_1h, rsi_1h, max_high = get_realtime_data()
     drop_from_high = (curr_price / max_high - 1) * 100
 
-    # [수정] 폭락 감지 기준 강화 (-10% -> -3%로 하향 조정하여 선제 대응)
+    # 대응 로직 (폭락 시 즉시 현금화)
     if drop_from_high <= -3.0: 
         tag, guide = "PANIC_EXIT", "🚨🚨 실시간 폭락 감지! 전량 현금화"
     elif rsi_1h >= 70:
@@ -82,4 +86,5 @@ try:
         with open(STATE_FILE, "w") as f: json.dump(state, f)
 
 except Exception as e:
+    # 에러 발생 시 텔레그램으로 상세 내용 전송
     send_msg(f"❌ 봇 에러 발생: {str(e)}")
