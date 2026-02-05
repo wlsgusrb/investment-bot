@@ -2,14 +2,14 @@ name: Silver Bot Auto Run
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # 15분마다 실행
-  workflow_dispatch:      # 이 줄이 있어야 'Run workflow' 버튼이 생깁니다
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write    # 파일 저장 권한
+      contents: write
 
     steps:
       - name: Checkout code
