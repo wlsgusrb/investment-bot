@@ -1,11 +1,11 @@
 name: Silver Bot Auto Run
 
 on:
+  repository_dispatch:
+    types: [external_cron]
+  workflow_dispatch:
   schedule:
     - cron: '*/15 * * * *'
-  workflow_dispatch:
-  repository_dispatch:
-    types: [external_cron]  # 크론잡 Body의 event_type과 일치해야 함
 
 jobs:
   build:
