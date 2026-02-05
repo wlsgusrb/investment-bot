@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+  # [추가] 외부 크론잡 서비스(cron-job.org 등)가 깨울 수 있게 허용
+  repository_dispatch:
+    types: [external_cron]
 
 jobs:
   build:
