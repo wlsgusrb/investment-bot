@@ -1,60 +1,97 @@
 
-name: Silver Bot Auto Run
+name: Silver Investment Bot
 
 on:
   repository_dispatch:
     types: [external_cron]
+
   workflow_dispatch:
+
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: "*/15 * * * *"
 
 jobs:
-  build:
+  run-bot:
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           pip install yfinance pandas requests
 
-      - name: Check Telegram secrets
+      # 텔레그램 토큰이 정상인지 먼저 확인
+      - name: Test Telegram token
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          test -n "$TELEGRAM_TOKEN" || {
-            echo "TELEGRAM_TOKEN이 설정되지 않았습니다."
-            exit 1
-          }
-          test -n "$TELEGRAM_CHAT_ID" || {
-            echo "TELEGRAM_CHAT_ID가 설정되지 않았습니다."
-            exit 1
-          }
-          echo "Telegram Secrets 확인 완료"
+          python - <<'PY'
+          import os
+          import requests
 
+          token = (os.getenv("TELEGRAM_TOKEN") or "").strip()
+
+          if not token:
+              print("ERROR: TELEGRAM_TOKEN이 비어 있습니다.")
+              raise SystemExit(1)
+
+          url = f"https://api.telegram.org/bot{token}/getMe"
+
+          try:
+              response = requests.get(url, timeout=15)
+              print("HTTP:", response.status_code)
+
+              try:
+                  result = response.json()
+              except ValueError:
+                  print("응답을 JSON으로 읽을 수 없습니다.")
+                  raise SystemExit(1)
+
+              print("API ok:", result.get("ok"))
+              print("Description:", result.get("description", ""))
+
+              if response.status_code != 200 or result.get("ok") is not True:
+                  raise SystemExit(1)
+
+              print("텔레그램 토큰 정상")
+          except requests.RequestException as e:
+              print("요청 오류:", type(e).__name__)
+              raise SystemExit(1)
+          PY
+
+      # 실제 투자 봇 실행
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
-
-      - name: Commit and Push changes
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add portfolio_state.json
-          git diff --cached --quiet || (
-            git commit -m "Update state"
-            git push
-          )
+          python main.py
+
+      # 상태 파일 저장
+      - name: Commit and push state
+        run: |
+          if [ -f portfolio_state.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git add portfolio_state.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Update portfolio state"
+              git push
+            else
+              echo "변경된 상태 파일이 없습니다."
+            fi
+          else
+            echo "portfolio_state.json 파일이 없습니다."
+          fi
