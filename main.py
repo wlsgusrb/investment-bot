@@ -1,4 +1,3 @@
-
 import os
 import json
 import time
@@ -46,13 +45,21 @@ if not TELEGRAM_CHAT_ID:
 # ============================================================
 
 def send_msg(msg, max_retries=3):
-    url = (
-        f"https://api.telegram.org/"
-        f"bot{TELEGRAM_TOKEN}/sendMessage"
-    )
+    token = (os.getenv("TELEGRAM_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+    if not token:
+        print("Telegram 전송 실패: TELEGRAM_TOKEN이 비어 있습니다.")
+        return False
+
+    if not chat_id:
+        print("Telegram 전송 실패: TELEGRAM_CHAT_ID가 비어 있습니다.")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
 
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": msg
     }
 
@@ -64,27 +71,47 @@ def send_msg(msg, max_retries=3):
                 timeout=15
             )
 
-            response.raise_for_status()
-            result = response.json()
+            try:
+                result = response.json()
+            except ValueError:
+                result = {}
 
-            if result.get("ok") is True:
+            if response.status_code == 200 and result.get("ok") is True:
                 print("Telegram 메시지 전송 성공")
                 return True
 
-            print(f"Telegram API 오류: {result}")
+            description = result.get(
+                "description",
+                "응답 설명 없음"
+            )
+
+            print(
+                f"Telegram 전송 실패 "
+                f"({attempt}/{max_retries}): "
+                f"HTTP {response.status_code}"
+            )
+
+            print(
+                f"Telegram API error: {description}"
+            )
 
         except requests.RequestException as e:
             print(
                 f"Telegram 전송 실패 "
-                f"({attempt}/{max_retries}): {e}"
+                f"({attempt}/{max_retries}): "
+                f"{type(e).__name__}: {e}"
             )
 
         except Exception as e:
-            print(f"Telegram 처리 오류: {e}")
+            print(
+                f"Telegram 처리 오류: "
+                f"{type(e).__name__}: {e}"
+            )
 
         if attempt < max_retries:
             time.sleep(2)
 
+    print("Telegram 전송 최종 실패")
     return False
 
 # ============================================================
